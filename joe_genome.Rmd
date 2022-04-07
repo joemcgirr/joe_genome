@@ -1,0 +1,318 @@
+---
+title: "Joe Genome"
+author: "Joe McGirr"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    code_folding: hide
+    collapsed: no
+    df_print: paged
+    number_sections: yes
+    theme: paper
+    toc: yes
+    toc_depth: 5
+    toc_float: yes
+  html_notebook:
+    toc: yes
+    toc_depth: 5
+editor_options: 
+  chunk_output_type: console
+---
+
+```{css, echo=FALSE}
+pre, code {white-space:pre !important; overflow-x:auto}
+```
+
+# General stats
+
+```{bash, eval = FALSE}
+
+wget https://github.com/samtools/bcftools/releases/download/1.15/bcftools-1.15.tar.bz2
+tar -xf bcftools-1.15.tar.bz2
+bcftools stats NG1T6RKMCV.vcf > bcftools_stats.txt
+
+sudo apt install default-jre
+wget https://github.com/broadinstitute/gatk/releases/download/4.2.5.0/gatk-4.2.5.0.zip
+unzip gatk-4.2.5.0.zip
+# alias gatk='/media/sf_dna/apps/gatk-4.2.5.0/gatk'
+
+
+gatk VariantsToTable -V NG1T6RKMCV.vcf -F CHROM -F POS -F TYPE -F ID -F AC -F AN -F DP -GF AD -GF DP -GF GQ -GF GT -O myGenome.txt
+sed -i '1s/NG1T6RKMCV/myGenome/g' myGenome.txt
+
+```
+
+```{r, eval = FALSE}
+
+stats <- read.delim("C:/Users/jmcgirr/dna/nebula/data/bcftools_stats.txt", comment.char = "#")
+
+```
+
+# Concordance
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+library(tidyverse)
+library(stringi)
+library(vroom)
+library(beepr)
+
+wk_dir <- "C:/Users/jmcgirr/dna/"
+
+# Nebula vcf
+vcf <- vroom(paste0(wk_dir,"nebula/data/myGenome.txt"), col_select = c("CHROM","POS","TYPE","ID","myGenome.GT")) %>%
+       # only check SNPs
+       filter(TYPE == "SNP") %>% select(-c(TYPE)) %>%
+       separate(myGenome.GT, c("vcf_allele1","vcf_allele2"), sep = "/|\\|") %>%
+       # remove deletions labeled as "*"
+       filter(vcf_allele1 != "*",vcf_allele2 != "*") %>%
+       # remove rows with missing rsid
+       filter(grepl("rs",ID))
+head(as.data.frame(vcf))
+
+# AncestryDNA 
+adna <- vroom(paste0(wk_dir,"ancestry/AncestryDNA.txt"), comment = "#") %>%
+        # remove missing genotypes labeled as 0
+        filter(allele1 != "0", allele2 != "0") %>%
+        # remove rows with missing rsid
+        filter(grepl("rs",rsid))
+head(as.data.frame(adna))
+
+# Inner join tables on rsid 
+merged_rsids <- inner_join(vcf,adna, by = c("ID" = "rsid")) %>%
+                unite("vcf_alleles", c("vcf_allele1", "vcf_allele2"), sep = "", remove = TRUE) %>%
+                unite("ancestry_alleles", c("allele1", "allele2"), sep = "", remove = TRUE) %>%
+                # match column will be yes if genotypes match between Nebula and AncestryDNA
+                mutate(match = ifelse((vcf_alleles == ancestry_alleles) | 
+                                      (stri_reverse(vcf_alleles) == ancestry_alleles) |
+                                       vcf_alleles == stri_reverse(ancestry_alleles), "yes","no"))
+head(as.data.frame(merged_rsids))
+
+# Calculate concordance between AncestryDNA and Nebula genotypes. 
+cat(paste0("Number of QC passing biallelic SNPs with rsids genotyped by Nebula:  ", nrow(vcf),"\n"))
+cat(paste0("Number of QC passing biallelic SNPs with rsids genotyped by AncestryDNA:  ", nrow(adna),"\n"))
+cat(paste0("rsids in common between Nebula and AncestryDNA:  ", nrow(merged_rsids),"\n\n"))
+
+genotype_concordance <- round((nrow(filter(merged_rsids, match == "yes"))/nrow(merged_rsids))*100,2)
+cat(paste0("Concordance between Nebula and AncestryDNA = ", genotype_concordance,"%\n"))
+
+#beep(sound = 8)
+
+```
+
+# Check rsids
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+
+# Create AncestryDNA input for cross map to convert hg19 to hg38 positions
+adna <- vroom(paste0(wk_dir,"ancestry/AncestryDNA.txt"), comment = "#")
+adna$end <- adna$position
+adna$start <- adna$end -1 
+adna$position <- NULL
+adna$chromosome <- paste0("chr", adna$chromosome)
+adna <- adna %>% relocate(chromosome,start, end,rsid, allele1,allele2)
+head(adna)
+
+write.table(adna,paste0("C:/Users/jmcgirr/dna/ancestry/liftover/AncestryDNA_hg19_positions.bed"), row.names = FALSE, quote = FALSE, col.names = FALSE)
+
+```
+
+```{bash, eval = FALSE}
+
+# Convert AncestryDNA hg19 poisitons to hg38
+wget http://hgdownload.soe.ucsc.edu/goldenPath/hg38/liftOver/hg38ToHg19.over.chain.gz
+CrossMap.py bed /media/sf_dna/ancestry/liftover/hg38ToHg19.over.chain.gz /media/sf_dna/ancestry/liftover/AncestryDNA_hg19_positions.bed AncestryDNA_hg38_positions.bed
+
+```
+
+```{r}
+
+adna38 <- vroom(paste0(wk_dir,"ancestry/liftover/AncestryDNA_hg38_positions.bed"), comment = "#", col_names = FALSE)
+names(adna38) <- c("chromosome","junk","position","rsid","allele1","allele2")
+
+merged_rsids38 <- inner_join(vcf,adna38, by = c("ID" = "rsid")) %>%
+                  unite("vcf_alleles", c("vcf_allele1", "vcf_allele2"), sep = "", remove = TRUE) %>%
+                  unite("ancestry_alleles", c("allele1", "allele2"), sep = "", remove = TRUE) %>%
+                  # only include rsids that agree with chr and pos for hg38
+                  filter(chromosome == CHROM, position == POS) %>%
+                  # match column will be yes if genotypes match between Nebula and AncestryDNA
+                  mutate(match = ifelse((vcf_alleles == ancestry_alleles) | 
+                                        (stri_reverse(vcf_alleles) == ancestry_alleles) |
+                                         vcf_alleles == stri_reverse(ancestry_alleles), "yes","no"))
+
+# Calculate concordance between AncestryDNA and Nebula genotypes using rsids confirmed by hg38 positions
+cat(paste0("Number of SNPs Nebula: ", nrow(vcf),"\n"))
+cat(paste0("Number of SNPs converted from hg19 to hg38 positions AncestryDNA:  ", nrow(adna38),"\n"))
+cat(paste0("rsids in common between Nebula and AncestryDNA that match hg38 chromosome and position:  ", nrow(merged_rsids38),"\n\n"))
+
+genotype_concordance <- round((nrow(filter(merged_rsids38, match == "yes"))/nrow(merged_rsids38))*100,2)
+cat(paste0("Concordance between Nebula and AncestryDNA = ", genotype_concordance,"%\n"))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r, eval = FALSE}
+library(tidyverse)
+library(vcfR)
+library(vroom)
+# library(rtracklayer)
+# library(plyranges)
+# ch <- import.chain("C:/Users/jmcgirr/dna/ancestry/hg38ToHg19.over.chain")
+# ch
+# ancestry_dna <- read.delim("C:/Users/jmcgirr/dna/ancestry/AncestryDNA.txt", comment.char = "#")
+# names(ancestry_dna) <- c("rsid","seqnames","start","allele1", "allele2")
+# ancestry_dna$end <- ancestry_dna$start
+# ancestry_dna <- as_granges(ancestry_dna)
+# 
+# hg38 <-  liftOver(ancestry_dna, ch)
+# unlist(hg38)
+
+ancestry_dna <- read.delim("C:/Users/jmcgirr/dna/ancestry/AncestryDNA.txt", comment.char = "#")
+ancestry_dna$end <- ancestry_dna$position
+ancestry_dna$start <- ancestry_dna$end -1 
+ancestry_dna$position <- NULL
+ancestry_dna$chromosome <- paste0("chr", ancestry_dna$chromosome)
+ancestry_dna <- ancestry_dna %>% relocate(chromosome,start, end,rsid, allele1,allele2)
+head(ancestry_dna)
+#ancestry_dna_hg19_positions <- select(ancestry_dna, chromosome, position)
+#ancestry_dna_hg19_positions$format <- paste0("chr",ancestry_dna_hg19_positions$chromosome,":",ancestry_dna_hg19_positions$position,"-",ancestry_dna_hg19_positions$position)
+
+write.table(ancestry_dna,"C:/Users/jmcgirr/dna/ancestry/AncestryDNA_hg19_positions.bed", row.names = FALSE, quote = FALSE, col.names = FALSE)
+#
+
+
+# join by rsid
+calls1 <- vroom("C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf", comment = "##") %>% rename(CHROM = `#CHROM`) %>%
+         select(CHROM, POS, ID, REF, ALT, NG1T6RKMCV) %>% 
+         separate(NG1T6RKMCV, c("GT","AD","DP","GQ"), sep = ":", extra = "drop") %>%
+         separate(GT, c("a1","a2"), sep = c("/","\\|")) %>%
+         separate(ALT, c("ALT1","ALT2"), sep = ",")
+head(calls1)
+
+
+vcf <- read.vcfR("C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf", verbose = FALSE)
+vcf1 <- vcfR2tidy(vcf)
+head(vcf1)
+vcf2 <- inner_join(select(vcf1$fix, ChromKey,   POS, ID),vcf1$gt)
+
+#http://crossmap.sourceforge.net/#convert-bed-format-files
+
+```
+
+```{r, eval = FALSE}
+original_path <- Sys.getenv("PATH")
+Sys.setenv(PATH = paste("C:/Users/jmcgirr/anaconda3/bin", original_path, sep = ":"))
+options(reticulate.conda_binary = "C:/Users/jmcgirr/anaconda3/conda.exe")
+use_condaenv(conda = "/opt/conda/bin/conda", condaenv = "<env_name>")
+library(reticulate)
+
+py_config()
+py_install("PyVCF")
+py_install("matplotlib")
+py_install("scikit-allel")
+py_install("pyvcf")
+py_install("htslib", pip = TRUE)
+
+py_install("fuc", pip = TRUE)
+
+
+```
+
+```{python, eval = FALSE}
+
+#import numpy as np
+import pandas as pd
+import vcf
+from fuc import pyvcf
+
+vcf_reader = vcf.Reader(open('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf', 'r'))
+
+# for record in vcf_reader:
+#   print(record)
+
+vf = pyvcf.VcfFrame.from_file('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf')
+
+```
+
+```{python, eval = FALSE}
+
+#http://alimanfoo.github.io/2017/06/14/read-vcf.html
+
+import allel
+import numpy as np
+import pandas as pd
+
+callset = allel.read_vcf('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf')
+sorted(callset.keys())
+callset['samples']
+callset['variants/CHROM']
+callset['variants/POS']
+callset['variants/QUAL']
+callset['calldata/GT']
+
+gt = allel.GenotypeArray(callset['calldata/GT'])
+gt
+
+gt.is_het()
+
+ac = gt.count_alleles()
+ac
+
+variants = allel.vcf_to_dataframe('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf', fields="variants/*")
+calls = allel.vcf_to_dataframe('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf', fields="calldata/DP")
+variants.head()
+print(variants.columns)
+calls.head()
+print(calls.columns)
+
+
+import io
+import os
+import pandas as pd
+
+
+def read_vcf(path):
+    with open(path, 'r') as f:
+        lines = [l for l in f if not l.startswith('##')]
+    return pd.read_csv(
+        io.StringIO(''.join(lines)),
+        dtype={'#CHROM': str, 'POS': int, 'ID': str, 'REF': str, 'ALT': str,
+               'QUAL': str, 'FILTER': str, 'INFO': str},
+        sep='\t'
+    ).rename(columns={'#CHROM': 'CHROM'})
+
+vcf = read_vcf('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf')
+vcf.head()
+print(vcf.columns)
+vcf['ALT1'], vcf['ALT2'] = vcf['ALT'].str.split(',',expand = True)
+print(vcf.columns)
+vcf[["ALT1", "ALT2"]].head()
+
+
+```
+
+# 1KG
+
+```{bash, eval = FALSE}
+
+wget https://github.com/samtools/bcftools/releases/download/1.15/bcftools-1.15.tar.bz2
+
+tar -xf bcftools-1.15.tar.bz2 
+
+#!/bin/bash
+
+#http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/
+
+wget http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr1.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz
+
+# see download_vcfs.sh
+
+```
