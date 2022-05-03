@@ -1,0 +1,309 @@
+---
+title: "Annotating my genomic variants with snpEFF, snpSift, and ClinVar"
+author: "Joe McGirr"
+date: '`r Sys.Date()`'
+output: rmdformats::readthedown
+editor_options: 
+  chunk_output_type: console
+---
+
+```{css, echo=FALSE}
+pre, code {white-space:pre !important; overflow-x:auto}
+```
+
+# Sequencing my genome
+
+This is the first in a series of notebooks that document my attempt to learn more about myself through sequencing. I'm a bioinformatics scientist with lots of experience tinkering with genomic data sets. When I heard that Nebula Genomics would sequence my whole genome at 30x coverage for $300 AND let me download all of the data (raw `.fastq`, .`.bam`, and `.vcf`), I jumped on the chance to take a look at my own source code. Nebula provided me with a `vcf` file containing 4,785,184 QC passing variants. I want to prioritize which of these millions of variants might deserve a closer look. As a first pass, I annotated these variants to see if any were known to disrupt protein function or play a role in disease. 
+
+There are plenty of third-party genetic interpretation websites that can do this kind of thing with your direct-to-consumer genetic test results. I thought it would be more fun to run my own analyses and share them with others that might want to limit the number of companies that have access to their genome. Anyone who has a `vcf` file from Nebula and a little experience with Linux and R should be able to recreate these analyses for themselves. I ran everything below on my little personal laptop (i5, 16G RAM) running Windows 11 with an [Ubuntu Virtualbox install](https://ubuntu.com/tutorials/how-to-run-ubuntu-desktop-on-a-virtual-machine-using-virtualbox#1-overview).
+
+# Publically availible tools and databases
+
+SnpEFF and SnpSift are popular tools for vcf annotation -- and for good reason. They generate loads of useful information while remaining user friendly. They are actively maintained as of spring 2022 and have extensive [documentation](https://pcingola.github.io/SnpEff/).
+
+[SnpEff](https://pcingola.github.io/SnpEff/se_introduction/) is a variant annotation and effect prediction tool. It annotates and predicts the effects of genetic variants.
+
+[SnpSift](https://pcingola.github.io/SnpEff/ss_introduction/) is a toolbox that allows you to filter and manipulate annotated files.
+
+Maintained by [Pablo Cingolani](https://pcingola.github.io/SnpEff/about/)
+
+Publications: [SnpEFF](https://pcingola.github.io/SnpEff/adds/SnpEff_paper.pdf), [SnpSift](https://pcingola.github.io/SnpEff/adds/SnpSift_paper.pdf)
+
+[GATK](https://gatk.broadinstitute.org/hc/en-us) is incredible software with many tools for genomic analyses. I only use it here to convert the `vcf` into something easier to read. 
+
+[ClinVar](https://www.ncbi.nlm.nih.gov/clinvar/) is a freely accessible, public archive of reports of the relationships among human variations and phenotypes, with supporting evidence. I use this database to help prioritize which of the millions of variants in my genome deserve a closer look.   
+
+[SNPedia](https://www.snpedia.com/index.php/SNPedia) is a wiki investigating human genetics that shares information about the effects of variations in DNA, citing peer-reviewed scientific publications. I use this resource to read quick facts about specific genetic variants and find associated publications. Unfortunately, it doesn't seem to be very actively maintained since it was [purchased by myHeritage](https://blog.myheritage.com/2019/09/myheritage-acquires-promethease-and-snpedia/) along with Promethease.
+
+# Load R libraries
+
+```{r}
+
+start_time <- Sys.time()
+
+suppressPackageStartupMessages(library(tidyverse))
+#library(vroom)
+library(rsnps)
+library(gt)
+#library(beepr)
+
+# Wong, B. Points of view: Color blindness. Nat Methods (2011).
+bla <- '#000000'
+blu <- '#0072b2'
+grb <- '#56b4e9'
+lir <- '#cc79a7'
+gre <- '#009e73'
+red <- '#d55e00'
+org <- '#e69f00'
+yel <- '#f0e442'
+gry <- '#BBBBBB'
+
+```
+
+# Annotating my `vcf` with SnpEFF
+
+## Setup 
+
+Downloading and installing SnpEFF is quick and easy. 
+
+```{bash, eval = FALSE,class.source = 'fold-show'}
+wget https://snpeff.blob.core.windows.net/versions/snpEff_latest_core.zip
+unzip snpEff_latest_core.zip
+```
+
+You must specify which genome was used during alignment to call varaiants in the vcf. Nebula currently aligns to hg38.
+
+```{bash, eval = FALSE,class.source = 'fold-show'}
+java -jar /media/sf_dna/apps/snpEff/snpEff.jar download -v hg38
+```
+
+This creates a new `vcf` with annotations for variants in the Nebula `vcf`.
+
+```{bash, eval = FALSE,class.source = 'fold-show'}
+java -Xmx8g -jar /media/sf_dna/apps/snpEff/snpEff.jar hg38 /media/sf_dna/nebula/vcf/nebula.vcf > myVariants.ann.vcf
+```
+
+GATK is also quick and easy to install.
+
+```{bash, eval = FALSE,class.source = 'fold-show'}
+sudo apt install default-jre
+wget https://github.com/broadinstitute/gatk/releases/download/4.2.5.0/gatk-4.2.5.0.zip
+unzip gatk-4.2.5.0.zip
+# set alias in bash profile 
+# alias gatk='/media/sf_dna/apps/gatk-4.2.5.0/gatk'
+```
+
+I convert the `vcf` annotated by SnpEFF to a tab delimited text file with GATK. This makes the data a little easier to read and can be fed into R as a data frame. I also replace my Nebula ID with 'myVariants' to make downstream scripts more generic.
+
+```{bash, eval = FALSE,class.source = 'fold-show'}
+gatk VariantsToTable -V myVariants.ann.vcf -F CHROM -F POS -F TYPE -F ID -F ANN -F LOF -F NMD -GF AD -GF DP -GF GQ -GF GT -O myVariants.ann.txt
+
+nebulaID="##########" 
+sed -i "1s/$nebulaID/myVariants/g" myVariants.ann.txt
+```
+
+## Possible variant annotations
+
+The annotated `vcf` output by SnpEFF has lots of information about how a variant influences molecular phenotypes (not necessarily disease phenotypes, which are explored below with SnpSift and Clinvar). Molecular effects are described by a sequence ontology term and associated with an estimate the magnitude of the functional impact. 
+
+```{r, message=FALSE, warning=FALSE, fig.width= 12, fig.height= 8,class.source = 'fold-show'}
+
+annotated_vcf_table <- "C:/Users/jmcgirr/dna/nebula/vcf/myVariants.ann.txt"
+
+ann <- read_table(annotated_vcf_table, guess_max = 1000000)
+
+# table based on SnpEFF documentation
+ann_types <- data.frame(impact = c("HIGH","HIGH","HIGH","HIGH","HIGH","HIGH","HIGH","HIGH","HIGH","HIGH","MODERATE","MODERATE","MODERATE","MODERATE","MODERATE","MODERATE","MODERATE","MODERATE","MODERATE","MODERATE","MODERATE","LOW","LOW","LOW","LOW","LOW","LOW","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER","MODIFIER"),
+                     ontology_term = c("chromosome_number_variation","exon_loss_variant","frameshift_variant","rare_amino_acid_variant","splice_acceptor_variant","splice_donor_variant","start_lost","stop_gained","stop_lost","transcript_ablation","3_prime_UTR_truncation&exon_loss","5_prime_UTR_truncation&exon_loss_variant","coding_sequence_variant-moderate","conservative_inframe_deletion","conservative_inframe_insertion","disruptive_inframe_deletion","disruptive_inframe_insertion","missense_variant","regulatory_region_ablation","splice_region_variant-moderate","TFBS_ablation","5_prime_UTR_premature_start_codon_gain_variant","initiator_codon_variant","splice_region_variant-low","start_retained","stop_retained_variant","synonymous_variant","3_prime_UTR_variant","5_prime_UTR_variant","coding_sequence_variant-modifier","conserved_intergenic_variant","conserved_intron_variant","downstream_gene_variant","exon_variant","feature_elongation","feature_truncation","gene_variant","intergenic_region","intragenic_variant","intron_variant","mature_miRNA_variant","miRNA","NMD_transcript_variant","non_coding_transcript_exon_variant","non_coding_transcript_variant","regulatory_region_amplification","regulatory_region_variant","TF_binding_site_variant","TFBS_amplification","transcript_amplification","transcript_variant","upstream_gene_variant"))
+
+ann_types |> gt() |> tab_header(title = "Putative impact for sequence ontology terms output by SnpEFF") 
+
+```
+
+## My variant annotations
+
+```{r, message=FALSE, warning=FALSE, fig.width= 12, fig.height= 9,class.source = 'fold-show'}
+
+# # count the number of variants annotated for each ontology
+# n_variants <- c()
+# for(ot in ann_types$ontology_term){
+#   n_variants <- c(n_variants,(filter(ann, grepl(ot, ANN)) |> nrow()))
+#   #print(ot)
+# }
+
+
+
+# count the number of variants annotated for each ontology
+n_variants <- vector("double", length(ann_types$ontology_term))
+
+for(i in seq_along(ann_types$ontology_term)){
+
+  n_variants[[i]] <- filter(ann, str_detect(ANN, fixed(ann_types$ontology_term[[i]]))) |> nrow()
+
+}
+
+
+ann_types$n_variants <- n_variants
+ann_types <- arrange(ann_types, n_variants)
+
+ann_types$ontology_term <- factor(ann_types$ontology_term, levels = ann_types$ontology_term)
+ann_types$impact <- factor(ann_types$impact, levels = c("HIGH","MODERATE","LOW","MODIFIER"))
+ann_types$log_n_variants <- log10(ann_types$n_variants)
+
+p1 <- ann_types|> 
+   ggplot(aes(ontology_term, log_n_variants, fill = impact)) +
+   geom_col() +
+   coord_flip() +
+   theme_minimal() +
+   theme(axis.title.x=element_text(size=14),
+    axis.title.y=element_text(size=12),
+    axis.title=element_text(size=14),
+    axis.text=element_text(size=12),
+    plot.title=element_text(size=18))+
+   ylab("\nlog(number of annotated variants)")+ xlab("")+ ylim(0,8)+
+   ggtitle("Number of variants showing each snpEFF annotation (log scale)")+
+   geom_text(aes(label=n_variants), position=position_stack(), hjust=-0.5)+
+   scale_fill_manual(values = c(red,yel,blu,gre))
+print(p1)
+
+p1 <- ann_types|> filter(impact %in% c("HIGH"), ontology_term != "missense_variant") |>
+   ggplot(aes(ontology_term, n_variants, fill = impact)) +
+   geom_col() +
+   coord_flip() +
+   theme_minimal() +
+   theme(axis.title.x=element_text(size=14),
+    axis.title.y=element_text(size=14),
+    axis.title=element_text(size=18),
+    axis.text=element_text(size=12),
+    plot.title=element_text(size=18))+
+   ylab("\nnumber of annotated variants")+ xlab("")+ylim(0,400)+
+   ggtitle("Number of variants showing high impact snpEFF annotations")+
+   geom_text(aes(label=n_variants), position=position_stack(), hjust=-0.5)+
+   scale_fill_manual(values = c(red,yel,blu,gre))
+print(p1)
+
+```
+
+## Investigate high impact variants on SNPedia
+
+Tables show my genotype (on the plus strand) along with genotype quality and allele depth. Links point to SNPedia entries for variants annotated as high impact. It seems only a few entries exist for each annotation type.
+
+```{r, results='asis'}
+
+# get table with rsids for an ontology term
+annotations.for.ontology.term <- function(ontology_term){
+ 
+  ot_table <- filter(ann, str_detect(ANN, fixed(ontology_term))) 
+  anns <- ot_table$ANN
+  
+  ot_anns <- c()
+  ot_alleles <- c()
+  for(ann_string in anns){
+    ot_anns <- c(ot_anns,paste0(paste(strsplit(grep(ontology_term, strsplit(ann_string, ",")[[1]], value = TRUE)[1], "\\|")[[1]][c(1,2,3,4,7)], collapse = "|"),"|"))
+  }
+  
+  ot_table$ANN <- ot_anns
+  ot_table <- separate(ot_table,ANN, c("allele","annotation","impact","gene_name","feature_id"), sep = "\\|", extra = "drop")
+  return(ot_table)
+}
+
+# search for SNPedia annotations for rsids output by annotations.for.ontology.term()
+get.snpedia.urls <- function(ot_table){
+  
+  snpedia_urls <- c()
+  myGTs  <- myADs <- myGQs <- c() 
+  ot_table <- filter(ot_table, grepl("rs",ID))
+  
+  for(rsid in ot_table$ID){
+  snpedia_table <- annotations(snp = rsid, output = 'snpedia')
+    if(nrow(snpedia_table)>0){
+      snpedia_urls <- c(snpedia_urls,gsub("\\s*\\([^\\)]+\\)","",snpedia_table$url[1]))
+      myGTs <- c(myGTs, filter(ot_table, ID == rsid) |> pull(myVariants.GT))
+      myADs <- c(myADs, filter(ot_table, ID == rsid) |> pull(myVariants.AD))
+      myGQs <- c(myGQs, filter(ot_table, ID == rsid) |> pull(myVariants.GQ))
+
+    }
+  }
+  
+  return(data.frame(SNPedia_urls = snpedia_urls, Genotype_PlusOrientation = myGTs,
+                    Allele_Depth = myADs, Genotype_Quality = myGQs))
+  
+}
+
+make.hyperlink <-  function(myurl,mytext=myurl) {
+  paste('<a href="',myurl,'">',mytext,'</a>')
+}
+
+for(i_ontology_term in (filter(ann_types, impact == "HIGH", n_variants > 0) |> pull(ontology_term))){
+print(get.snpedia.urls(annotations.for.ontology.term(i_ontology_term)) |> 
+        gt() |> 
+        tab_header(title = paste0("SNPedia entries for variants annotated as ", i_ontology_term)) |> 
+        fmt (columns = 'SNPedia_urls',fns = make.hyperlink))
+}
+
+```
+
+# Annotating my `vcf` with SnpSift and Clinvar
+
+SnpSift is automatically installed along with SnpEFF.
+
+SnpSift takes annotations from one `vcf` and transfers them to matching variants in another `vcf`.
+
+I annotate my Nebula `vcf` using a `vcf` curated by Clinvar. The Clinvar `vcf` reports the [clinical significance](https://www.ncbi.nlm.nih.gov/clinvar/docs/clinsig/) of each variant based on supporting literature. I use this to prioritize possible variants of concern (annotated as pathogenic).
+
+Download the Clinvar `vcf`.
+
+```{bash,eval = FALSE}
+wget https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz
+```
+
+Annotate my `vcf` with Clinvar `vcf` and convert to tab delimited table with GATK.
+
+```{bash,eval = FALSE}
+java -jar /media/sf_dna/apps/snpEff/SnpSift.jar annotate /media/sf_dna/clinvar/clinvar.vcf.gz /media/sf_dna/nebula/vcf/NG1T6RKMCV.vcf > myVariants.clinvar.vcf
+
+gatk VariantsToTable -V /media/sf_dna/nebula/vcf/myVariants.dbNSFP.vcf -F CHROM -F POS -F TYPE -F ID -F ALLELEID -F CLNDN -F CLNSIG -F CLNSIGCONF -F CLNSIGINCL -F CLNVC -F GENEINFO -GF AD -GF GQ -GF GT -O myVariants.clinvar.txt
+
+sed -i '1s/NG1T6RKMCV/myVariants/g' myVariants.clinvar.txt
+```
+
+## Identify possible pathogenic variants 
+
+```{r}
+
+annotated_vcf_table <- "C:/Users/jmcgirr/dna/nebula/vcf/myVariants.clinvar.txt"
+
+ann <- read_table(annotated_vcf_table, guess_max = 1000000) |>
+      filter(!is.na(ALLELEID))
+patho <- filter(ann, str_detect(CLNSIG, fixed("Pathogenic")) | str_detect(CLNSIG, fixed("Likely_pathogenic"))) |> separate("ID", c("ID","unknown"), sep = ";")
+#unique(patho$CLNSIG)
+#nrow(patho)
+as.data.frame(patho) |> gt()
+
+```
+
+## Investigate pathogenic variants on SNPedia
+
+```{r, results='asis'}
+
+print(get.snpedia.urls(patho) |> 
+      gt() |> 
+      tab_header(title = "SNPedia entries for variants annotated as pathoginic or likely pathogenic") |> 
+      fmt (columns = 'SNPedia_urls',fns = make.hyperlink))
+
+```
+
+# Notes
+
+## Git repo for the R markdown used to create this html
+
+
+
+### R run time and session info
+
+```{r}
+end_time <- Sys.time()
+print(end_time - start_time)
+
+sessionInfo()
+```
