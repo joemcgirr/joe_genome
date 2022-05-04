@@ -31,20 +31,31 @@ wget https://github.com/samtools/bcftools/releases/download/1.15/bcftools-1.15.t
 tar -xf bcftools-1.15.tar.bz2
 bcftools stats NG1T6RKMCV.vcf > bcftools_stats.txt
 
-sudo apt install default-jre
-wget https://github.com/broadinstitute/gatk/releases/download/4.2.5.0/gatk-4.2.5.0.zip
-unzip gatk-4.2.5.0.zip
-# alias gatk='/media/sf_dna/apps/gatk-4.2.5.0/gatk'
+gatk VariantsToTable -V NG1T6RKMCV.vcf -F CHROM -F POS -F TYPE -F ID -F AC -F AN -F DP -GF AD -GF DP -GF GQ -GF GT -O myVariants.txt
+sed -i '1s/NG1T6RKMCV/myVariants/g' myVariants.txt
 
 
-gatk VariantsToTable -V NG1T6RKMCV.vcf -F CHROM -F POS -F TYPE -F ID -F AC -F AN -F DP -GF AD -GF DP -GF GQ -GF GT -O myGenome.txt
-sed -i '1s/NG1T6RKMCV/myGenome/g' myGenome.txt
+
+# annotate using dbNSFP
+
+wget https://snpeff.blob.core.windows.net/databases/dbs/GRCh38/dbNSFP_4.1a/dbNSFP4.1a.txt.gz
+wget https://snpeff.blob.core.windows.net/databases/dbs/GRCh38/dbNSFP_4.1a/dbNSFP4.1a.txt.gz.tbi
+
+java -jar /media/sf_dna/apps/snpEff/SnpSift.jar dbnsfp -v -db /media/sf_dna/dbNSFP/dbNSFP4.1a.txt.gz /media/sf_dna/nebula/vcf/NG1T6RKMCV.vcf > /media/sf_dna/nebula/vcf/myVariants.dbNSFP.vcf
+ # 7.5 hours
+
+gatk VariantsToTable -V /media/sf_dna/nebula/vcf/myVariants.dbNSFP.vcf -F CHROM  -F POS -F TYPE -F ID -GF AD -GF GQ -GF GT -F dbNSFP_1000Gp3_AFR_AF -F dbNSFP_1000Gp3_AMR_AC -F dbNSFP_1000Gp3_AMR_AF -F dbNSFP_1000Gp3_EAS_AC -F dbNSFP_1000Gp3_EAS_AF -F dbNSFP_1000Gp3_EUR_AC -F dbNSFP_1000Gp3_EUR_AF -F dbNSFP_1000Gp3_SAS_AC -F dbNSFP_1000Gp3_SAS_AF -F dbNSFP_CADD_phred -F dbNSFP_GERP___NR -F dbNSFP_GERP___RS -F dbNSFP_LRT_pred -F dbNSFP_MetaSVM_pred -F dbNSFP_MutationAssessor_pred -F dbNSFP_MutationTaster_pred -F dbNSFP_phastCons100way_vertebrate -F dbNSFP_Polyphen2_HDIV_pred -F dbNSFP_Polyphen2_HVAR_pred -F dbNSFP_PROVEAN_pred -F dbNSFP_SIFT_pred -O myVariants.dbNSFP.txt
+# 9 minutes
+
+sed -i '1s/NG1T6RKMCV/myVariants/g' myVariants.dbNSFP.txt
+sed -i '1s/dbNSFP_//g' myVariants.dbNSFP.txt
+
 
 ```
 
 ```{r, eval = FALSE}
 
-stats <- read.delim("C:/Users/jmcgirr/dna/nebula/data/bcftools_stats.txt", comment.char = "#")
+stats <- read.delim("C:/Users/jmcgirr/dna/nebula/vcf/bcftools_stats.txt", comment.char = "#")
 
 ```
 
@@ -59,28 +70,28 @@ library(beepr)
 wk_dir <- "C:/Users/jmcgirr/dna/"
 
 # Nebula vcf
-vcf <- vroom(paste0(wk_dir,"nebula/data/myGenome.txt"), col_select = c("CHROM","POS","TYPE","ID","myGenome.GT")) %>%
+vcf <- vroom(paste0(wk_dir,"nebula/vcf/myVariants.txt"), col_select = c("CHROM","POS","TYPE","ID","myVariants.GT")) |>
        # only check SNPs
-       filter(TYPE == "SNP") %>% select(-c(TYPE)) %>%
-       separate(myGenome.GT, c("vcf_allele1","vcf_allele2"), sep = "/|\\|") %>%
+       filter(TYPE == "SNP") |> select(-c(TYPE)) |>
+       separate(myVariants.GT, c("vcf_allele1","vcf_allele2"), sep = "/|\\|") |>
        # remove deletions labeled as "*"
-       filter(vcf_allele1 != "*",vcf_allele2 != "*") %>%
+       filter(vcf_allele1 != "*",vcf_allele2 != "*") |>
        # remove rows with missing rsid
        filter(grepl("rs",ID))
 head(as.data.frame(vcf))
 
 # AncestryDNA 
-adna <- vroom(paste0(wk_dir,"ancestry/AncestryDNA.txt"), comment = "#") %>%
+adna <- vroom(paste0(wk_dir,"ancestry/AncestryDNA.txt"), comment = "#") |>
         # remove missing genotypes labeled as 0
-        filter(allele1 != "0", allele2 != "0") %>%
+        filter(allele1 != "0", allele2 != "0") |>
         # remove rows with missing rsid
         filter(grepl("rs",rsid))
 head(as.data.frame(adna))
 
 # Inner join tables on rsid 
-merged_rsids <- inner_join(vcf,adna, by = c("ID" = "rsid")) %>%
-                unite("vcf_alleles", c("vcf_allele1", "vcf_allele2"), sep = "", remove = TRUE) %>%
-                unite("ancestry_alleles", c("allele1", "allele2"), sep = "", remove = TRUE) %>%
+merged_rsids <- inner_join(vcf,adna, by = c("ID" = "rsid")) |>
+                unite("vcf_alleles", c("vcf_allele1", "vcf_allele2"), sep = "", remove = TRUE) |>
+                unite("ancestry_alleles", c("allele1", "allele2"), sep = "", remove = TRUE) |>
                 # match column will be yes if genotypes match between Nebula and AncestryDNA
                 mutate(match = ifelse((vcf_alleles == ancestry_alleles) | 
                                       (stri_reverse(vcf_alleles) == ancestry_alleles) |
@@ -88,18 +99,19 @@ merged_rsids <- inner_join(vcf,adna, by = c("ID" = "rsid")) %>%
 head(as.data.frame(merged_rsids))
 
 # Calculate concordance between AncestryDNA and Nebula genotypes. 
-cat(paste0("Number of QC passing biallelic SNPs with rsids genotyped by Nebula:  ", nrow(vcf),"\n"))
-cat(paste0("Number of QC passing biallelic SNPs with rsids genotyped by AncestryDNA:  ", nrow(adna),"\n"))
+cat(paste0("Number of QC passing SNPs with rsids genotyped by Nebula:  ", nrow(vcf),"\n"))
+cat(paste0("Number of QC passing SNPs with rsids genotyped by AncestryDNA:  ", nrow(adna),"\n"))
 cat(paste0("rsids in common between Nebula and AncestryDNA:  ", nrow(merged_rsids),"\n\n"))
 
 genotype_concordance <- round((nrow(filter(merged_rsids, match == "yes"))/nrow(merged_rsids))*100,2)
 cat(paste0("Concordance between Nebula and AncestryDNA = ", genotype_concordance,"%\n"))
 
-#beep(sound = 8)
+beep(sound = 12)
+#?PolyPhenDbColumns
 
 ```
 
-# Check rsids
+## Check rsids
 
 ```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
 
@@ -109,7 +121,7 @@ adna$end <- adna$position
 adna$start <- adna$end -1 
 adna$position <- NULL
 adna$chromosome <- paste0("chr", adna$chromosome)
-adna <- adna %>% relocate(chromosome,start, end,rsid, allele1,allele2)
+adna <- adna |> relocate(chromosome,start, end,rsid, allele1,allele2)
 head(adna)
 
 write.table(adna,paste0("C:/Users/jmcgirr/dna/ancestry/liftover/AncestryDNA_hg19_positions.bed"), row.names = FALSE, quote = FALSE, col.names = FALSE)
@@ -119,6 +131,7 @@ write.table(adna,paste0("C:/Users/jmcgirr/dna/ancestry/liftover/AncestryDNA_hg19
 ```{bash, eval = FALSE}
 
 # Convert AncestryDNA hg19 poisitons to hg38
+pip3 install crossmap
 wget http://hgdownload.soe.ucsc.edu/goldenPath/hg38/liftOver/hg38ToHg19.over.chain.gz
 CrossMap.py bed /media/sf_dna/ancestry/liftover/hg38ToHg19.over.chain.gz /media/sf_dna/ancestry/liftover/AncestryDNA_hg19_positions.bed AncestryDNA_hg38_positions.bed
 
@@ -129,11 +142,11 @@ CrossMap.py bed /media/sf_dna/ancestry/liftover/hg38ToHg19.over.chain.gz /media/
 adna38 <- vroom(paste0(wk_dir,"ancestry/liftover/AncestryDNA_hg38_positions.bed"), comment = "#", col_names = FALSE)
 names(adna38) <- c("chromosome","junk","position","rsid","allele1","allele2")
 
-merged_rsids38 <- inner_join(vcf,adna38, by = c("ID" = "rsid")) %>%
-                  unite("vcf_alleles", c("vcf_allele1", "vcf_allele2"), sep = "", remove = TRUE) %>%
-                  unite("ancestry_alleles", c("allele1", "allele2"), sep = "", remove = TRUE) %>%
+merged_rsids38 <- inner_join(vcf,adna38, by = c("ID" = "rsid")) |>
+                  unite("vcf_alleles", c("vcf_allele1", "vcf_allele2"), sep = "", remove = TRUE) |>
+                  unite("ancestry_alleles", c("allele1", "allele2"), sep = "", remove = TRUE) |>
                   # only include rsids that agree with chr and pos for hg38
-                  filter(chromosome == CHROM, position == POS) %>%
+                  filter(chromosome == CHROM, position == POS) |>
                   # match column will be yes if genotypes match between Nebula and AncestryDNA
                   mutate(match = ifelse((vcf_alleles == ancestry_alleles) | 
                                         (stri_reverse(vcf_alleles) == ancestry_alleles) |
@@ -150,16 +163,312 @@ cat(paste0("Concordance between Nebula and AncestryDNA = ", genotype_concordance
 ```
 
 
+# GAWS Catelog 
+(gwascat package)
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+library(gwascat)
+library(tidyverse)
+library(vroom)
+
+wk_dir <- "C:/Users/jmcgirr/dna/"
+
+# Nebula vcf
+vcf <- vroom(paste0(wk_dir,"nebula/vcf/myVariants.txt"), col_select = c("CHROM","POS","TYPE","ID","myVariants.GT")) |>
+       # only check SNPs
+       filter(TYPE == "SNP") |> select(-c(TYPE)) |>
+       separate(myVariants.GT, c("vcf_allele1","vcf_allele2"), sep = "/|\\|") |>
+       # remove deletions labeled as "*"
+       filter(vcf_allele1 != "*",vcf_allele2 != "*") |>
+       # remove rows with missing rsid
+       filter(grepl("rs",ID))
+head(as.data.frame(vcf))
+
+gwtrunc <- makeCurrentGwascat()
+topTraits(gwtrunc)
+intr <- gwtrunc[ intersect(getRsids(gwtrunc), vcf$ID) ]
+
+# catelog_matches <- data.frame(CHROM = paste0("chr",intr$`CHR_ID`),
+#                               POS = intr$`CHR_POS`,
+#                               ID = intr$`SNPS`,
+#                               STRONGEST_SNP_RISK_ALLELE = intr$`STRONGEST SNP-RISK ALLELE`,
+#                               RISK_ALLELE_FREQUENCY = intr$`RISK ALLELE FREQUENCY`,
+#                               DISEASE_TRAIT = intr$`DISEASE/TRAIT`,
+#                               P_VALUE = intr$`P-VALUE`,
+#                               OR_or_Beta = intr$`OR or BETA`,
+#                               CI = intr$`X95..CI..TEXT.`,
+#                               PUBMEDID = intr$`PUBMEDID`) |>
+#                   separate(STRONGEST_SNP_RISK_ALLELE, c("STRONGEST_SNP","RISK_ALLELE"), sep = "-" ,remove = TRUE) |>
+#                   select(-c(STRONGEST_SNP)) |>
+#                   arrange(P_VALUE) |>
+#                   inner_join(vcf)
+
+catelog_matches <-  as.data.frame(gwtrunc) |> 
+                    filter(SNPS %in% vcf$ID) |>
+                    filter(SNPS %in% vcf$ID) |>
+                    
+
+nrow(catelog_matches)
+head(catelog_matches,50)
+
+
+homozygous_for_risk_allele <- filter(catelog_matches,vcf_allele1 == RISK_ALLELE, vcf_allele2 == RISK_ALLELE, P_VALUE < 1e-20) |> 
+                              arrange(RISK_ALLELE_FREQUENCY,P_VALUE)
+head(homozygous_for_risk_allele,50)
+
+homozygous_for_risk_allele_low_freq <- filter(catelog_matches,vcf_allele1 == RISK_ALLELE & vcf_allele2 == RISK_ALLELE, RISK_ALLELE_FREQUENCY < 0.1, P_VALUE < 1e-20) |> 
+                                       arrange(P_VALUE)
+
+het_or_hom_for_risk_allele <- filter(catelog_matches,vcf_allele1 == RISK_ALLELE | vcf_allele2 == RISK_ALLELE, P_VALUE < 1e-20) |> 
+                              arrange(RISK_ALLELE_FREQUENCY,P_VALUE)
+as.data.frame(het_or_hom_for_risk_allele) |> head(50)
+
+het_or_hom_for_risk_allele <- filter(catelog_matches,vcf_allele1 == RISK_ALLELE | vcf_allele2 == RISK_ALLELE, P_VALUE < 1e-20) |> 
+                              arrange(desc(OR_or_Beta))
+as.data.frame(het_or_hom_for_risk_allele) |> head(100)
+
+
+catelog_matches |> 
+  arrange(desc(OR_or_Beta)) |> 
+  as.data.frame() |> 
+  head(100)
+
+het_or_hom_for_risk_allele |>
+  group_by(DISEASE_TRAIT) |>
+  summarize(Count=n()) |>
+  mutate(Percent = round((Count/sum(Count)*100))) |>
+  arrange(desc(Count)) |>
+  as.data.frame() |>
+  head(100)
+
+# notes on interpreting betas and OR
+# https://parkinsonsroadmap.org/understanding-gwas/
+
+# str_arrange <- function(x){
+#   x |>
+#     stringr::str_split("") |>                        # Split string into letters
+#     purrr::map(~sort(.) |> paste(collapse = "")) |> # Sort and re-combine
+#     as_vector()                                       # Convert list into vector
+# }
+# 
+# transposed_genotypes <- vcf |> 
+#                         filter(CHROM == "chr1") |>
+#                         select(c(ID,vcf_allele1, vcf_allele2)) |>
+#                         unite("vcf_alleles", c("vcf_allele1", "vcf_allele2"), sep = "", remove = TRUE) |>
+#                         #sort alleles alphabetically with str_arrange function
+#                         mutate(vcf_alleles = str_arrange(vcf_alleles)) |>
+#                         mutate(vcf_alleles = gsub("\\B", "/", vcf_alleles, perl = TRUE)) |>
+#                         t() |> as.data.frame()
+# names(transposed_genotypes) <- transposed_genotypes[1,]
+# transposed_genotypes <- transposed_genotypes[2,]
+# transposed_genotypes[,1:5]
+# #row.names(transposed_genotypes) <- c("myVariants")
+# 
+# a <- as.matrix(transposed_genotypes[,1:5])
+# risky_alleles <- riskyAlleleCount(gg17N[1:5,1:5], matIsAB=FALSE, chr = "ch17",gwwl = gwtrunc)
+# 
+# risky_alleles <- riskyAlleleCount(transposed_genotypes, matIsAB=FALSE, chr = "chr1",gwwl = gwtrunc)
+
+
+# https://jeffreyblanchard.github.io/HumGen2021R/HumGen_Lab9_SNP.html#gwascat-structuring-and-querying-the-nhgri-gwas-catalog
+
+
+install.packages('gwasrapidd')
+library(gwasrapidd)
+#https://rmagno.eu/gwasrapidd/articles/faq.html
+
+start_time <- Sys.time()
+#test_matches <- get_variants(variant_id = homozygous_for_risk_allele_low_freq$ID)
+test_matches <- get_associations(variant_id = homozygous_for_risk_allele_low_freq$ID)
+
+end_time <- Sys.time()
+print(end_time - start_time)
+test_matches
+
+```
+
+# IEU gwas catelog
+
+```{r}
+#devtools::install_github("mrcieu/ieugwasr")
+library(tidyverse)
+library(vroom)
+
+wk_dir <- "C:/Users/jmcgirr/dna/"
+
+# Nebula vcf
+vcf <- vroom(paste0(wk_dir,"nebula/vcf/myVariants.txt"), col_select = c("CHROM","POS","TYPE","ID","myVariants.GT")) |>
+       # only check SNPs
+       filter(TYPE == "SNP") |> select(-c(TYPE)) |>
+       separate(myVariants.GT, c("vcf_allele1","vcf_allele2"), sep = "/|\\|") |>
+       # remove deletions labeled as "*"
+       filter(vcf_allele1 != "*",vcf_allele2 != "*") |>
+       # remove rows with missing rsid
+       filter(grepl("rs",ID))
+head(as.data.frame(vcf))
 
 
 
+all_studies <- ieugwasr::gwasinfo()  
+  
+#test <- filter(all_studies,grepl("Pso",trait)) |> as.data.frame()
+#test
+
+#ieugwasr::associations(variants=c("rs1205"), id = c('ukb-b'))
+catelog_matches <- ieugwasr::phewas(variants=vcf$ID[1:4000], pval=1e-8)
+catelog_matches
+
+```
 
 
+# rsnps
+possibly use this in combination with snpedia to recreate percentile metric reported by nebula
+instead of nebula participants, use openSNP participants
+
+```{r}
+
+#install.packages("rsnps")
+library(rsnps)
+snps <- c("rs332", "rs420358")
+ncbi_snp_query(snps) |> as.data.frame() |> pull(maf_population)
+
+x <- allgensnp(snp = 'rs7412')
+head(x)
+
+annotations(snp = 'rs7903146', output = 'metadata')
+annotations(snp = 'rs7903146', output = 'plos')
+annotations(snp = 'rs7903146', output = 'snpedia')
+annotations(snp = 'rs7903146', output = 'all')
+
+datalist <- allphenotypes()
+names(datalist)
+head(datalist)
+datalist[["Psoriatic Arthritis"]]
+
+```
+
+# SNPediaR
+
+```{r}
+
+BiocManager::install("SNPediaR")
+library(SNPediaR)
+library(RCurl)
+library(jsonlite)
+
+getPages <- function(titles,
+                      verbose = FALSE,
+                      limit = 50,
+                      wikiParseFunction = identity,
+                      baseURL,
+                      format,
+                      query,
+                      ...
+                      ) {
+
+    ## default URL parameters
+    if (missing(baseURL)) baseURL <- "https://bots.snpedia.com/api.php"
+    if (missing(format))  format  <- "format=json"
+    if (missing(query))   query   <- "action=query&prop=revisions&rvprop=content&titles="
+                 
+    ## URL
+    baseURL <- paste0(baseURL, "?", format, "&", query)
+   
+    ## counters
+    Np <- length(titles) ## number of pages
+    Cp <- 0               ## downloaded(accumulated) pages
+   
+    ## format titles
+    titles <- curlEscape(titles)  ## white spaces to %20 Suitable for URLs
+    n.batches <- 1 + length(titles) %/% limit
+    suppressWarnings(titles <- split(titles, 1:n.batches))
+    titles <- sapply(titles, paste, collapse = "|")
+   
+    ## loop
+    res <- list()
+    for (tit in titles) {
+        pagesURL <- paste0(baseURL, tit)
+        if (verbose) {
+            Cp <- Cp + limit
+            cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+                 "Downloading", min(Cp, Np), "of", Np, "pages ...",
+                 pagesURL, fill = TRUE)
+        }
+        ## get URL
+        datos <- pagesURL
+
+        ## parsing some strange characters:
+        datos <- gsub("\\n", "\\\\n", datos)  ## Some funny endlines
+        datos <- gsub("\\t", "\\\\t", datos)  ## Some funny tabs
+        datos <- gsub("\\\\\\\\x", "~x", datos) ## \\\\x double bar in R
+        datos <- gsub("\\\\x",     "~x", datos) ## \\x  see for instance Rs9530
+        datos <- gsub("\\| *",  "\\|"  , datos) ## white after pipe
+        datos <- gsub(" *= *",  "="    , datos) ## white around equal
+       
+        ## json
+        ##print(datos)
+        datos <- fromJSON(datos)
+        datos <- datos[["query"]][["pages"]]
+        ## list
+        nombres <- sapply(datos, function(x) x[["title"]])
+        datos <- lapply(datos, function(x) x[["revisions"]][["*"]])
+        names(datos) <- nombres
+        ## parsing function
+        datos <- lapply(datos, wikiParseFunction, ...)
+        ## store
+        res <- c(res, datos)
+    }
+    return(res)
+}
+
+pg <- getPages (titles = "Rs53576", verbose = TRUE)
+pg
+extractSnpTags (pg$Rs53576)
+sapply (pg, extractGenotypeTags)
+
+```
+
+# Protein Prediction
+https://bioconductor.org/packages/release/bioc/vignettes/VariantAnnotation/inst/doc/VariantAnnotation.pdf
+
+```{r}
+#BiocManager::install("PolyPhen.Hsapiens.dbSNP131")
+library(dplyr)
+library(PolyPhen.Hsapiens.dbSNP131)
+
+
+pp_rsids <- filter(vcf, CHROM == "chr1") |> pull(ID)
+
+pp <- select(PolyPhen.Hsapiens.dbSNP131, keys=vcf$ID ,cols=c("TRAININGSET", "PREDICTION", "PPH2PROB"))
+pp <- pp[!is.na(pp$PREDICTION), ]
+pp <- dplyr::select(pp, c(RSID,AA1,AA2,NT1,NT2,PREDICTION,BASEDON,EFFECT,COMMENTS))
+unique(pp$PREDICTION)
+
+pp_vcf <- inner_join(vcf, pp, by = c("ID" = "RSID")) |>
+          filter(NT2 == vcf_allele1 | NT2 == vcf_allele2, PREDICTION == "probably damaging")
+          
+head(pp_vcf)
+unique(pp_vcf$PREDICTION)
+
+```
 
 
 
 
 ```{r, eval = FALSE}
+# Variant Effect Predictor
+
+http://useast.ensembl.org/info/docs/tools/vep/index.html?redirect=no
+https://rockefelleruniversity.github.io/RU_GenomicVariants/
+https://github.com/NCBI-Hackathons/Community_Software_Tools_for_NGS/blob/master/Variant_Annotation.md
+need to overlap with clinvar
+
+sudo cpan App::cpanminus
+sudo cpanm Archive::Zip
+sudo cpanm DBD::mysql
+sudo cpanm DBI
+
+
 library(tidyverse)
 library(vcfR)
 library(vroom)
@@ -180,7 +489,7 @@ ancestry_dna$end <- ancestry_dna$position
 ancestry_dna$start <- ancestry_dna$end -1 
 ancestry_dna$position <- NULL
 ancestry_dna$chromosome <- paste0("chr", ancestry_dna$chromosome)
-ancestry_dna <- ancestry_dna %>% relocate(chromosome,start, end,rsid, allele1,allele2)
+ancestry_dna <- ancestry_dna |> relocate(chromosome,start, end,rsid, allele1,allele2)
 head(ancestry_dna)
 #ancestry_dna_hg19_positions <- select(ancestry_dna, chromosome, position)
 #ancestry_dna_hg19_positions$format <- paste0("chr",ancestry_dna_hg19_positions$chromosome,":",ancestry_dna_hg19_positions$position,"-",ancestry_dna_hg19_positions$position)
@@ -190,15 +499,15 @@ write.table(ancestry_dna,"C:/Users/jmcgirr/dna/ancestry/AncestryDNA_hg19_positio
 
 
 # join by rsid
-calls1 <- vroom("C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf", comment = "##") %>% rename(CHROM = `#CHROM`) %>%
-         select(CHROM, POS, ID, REF, ALT, NG1T6RKMCV) %>% 
-         separate(NG1T6RKMCV, c("GT","AD","DP","GQ"), sep = ":", extra = "drop") %>%
-         separate(GT, c("a1","a2"), sep = c("/","\\|")) %>%
+calls1 <- vroom("C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf", comment = "##") |> rename(CHROM = `#CHROM`) |>
+         select(CHROM, POS, ID, REF, ALT, NG1T6RKMCV) |> 
+         separate(NG1T6RKMCV, c("GT","AD","DP","GQ"), sep = ":", extra = "drop") |>
+         separate(GT, c("a1","a2"), sep = c("/","\\|")) |>
          separate(ALT, c("ALT1","ALT2"), sep = ",")
 head(calls1)
 
 
-vcf <- read.vcfR("C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf", verbose = FALSE)
+vcf <- read.vcfR("C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf", verbose = FALSE)
 vcf1 <- vcfR2tidy(vcf)
 head(vcf1)
 vcf2 <- inner_join(select(vcf1$fix, ChromKey,   POS, ID),vcf1$gt)
@@ -206,6 +515,7 @@ vcf2 <- inner_join(select(vcf1$fix, ChromKey,   POS, ID),vcf1$gt)
 #http://crossmap.sourceforge.net/#convert-bed-format-files
 
 ```
+
 
 ```{r, eval = FALSE}
 original_path <- Sys.getenv("PATH")
@@ -233,12 +543,12 @@ import pandas as pd
 import vcf
 from fuc import pyvcf
 
-vcf_reader = vcf.Reader(open('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf', 'r'))
+vcf_reader = vcf.Reader(open('C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf', 'r'))
 
 # for record in vcf_reader:
 #   print(record)
 
-vf = pyvcf.VcfFrame.from_file('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf')
+vf = pyvcf.VcfFrame.from_file('C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf')
 
 ```
 
@@ -250,7 +560,7 @@ import allel
 import numpy as np
 import pandas as pd
 
-callset = allel.read_vcf('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf')
+callset = allel.read_vcf('C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf')
 sorted(callset.keys())
 callset['samples']
 callset['variants/CHROM']
@@ -266,8 +576,8 @@ gt.is_het()
 ac = gt.count_alleles()
 ac
 
-variants = allel.vcf_to_dataframe('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf', fields="variants/*")
-calls = allel.vcf_to_dataframe('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf', fields="calldata/DP")
+variants = allel.vcf_to_dataframe('C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf', fields="variants/*")
+calls = allel.vcf_to_dataframe('C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf', fields="calldata/DP")
 variants.head()
 print(variants.columns)
 calls.head()
@@ -289,7 +599,7 @@ def read_vcf(path):
         sep='\t'
     ).rename(columns={'#CHROM': 'CHROM'})
 
-vcf = read_vcf('C:/Users/jmcgirr/dna/nebula/data/NG1T6RKMCV.vcf')
+vcf = read_vcf('C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf')
 vcf.head()
 print(vcf.columns)
 vcf['ALT1'], vcf['ALT2'] = vcf['ALT'].str.split(',',expand = True)
@@ -314,5 +624,76 @@ tar -xf bcftools-1.15.tar.bz2
 wget http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr1.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz
 
 # see download_vcfs.sh
+
+```
+
+# iobio
+
+```{bash}
+wget https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20220402.zip
+unzip plink_linux_x86_64_20220402.zip
+
+/media/sf_dna/apps/plink/plink --vcf /media/sf_dna/nebula/vcf/NG1T6RKMCV.vcf --allow-extra-chr --recode --out /media/sf_dna/nebula/plink/myVariants
+
+```
+
+# phenolyzer
+
+# polygenic risk score calculator
+
+https://prs.byu.edu/cli_download.html
+
+https://github.com/kauwelab/PolyRiskScore
+
+```{bash}
+
+wget https://prs.byu.edu/download_cli
+
+#./runPrsCLI.sh -f /media/sf_dna/nebula/vcf/NG1T6RKMCV.vcf -o PRS_output.tsv -r hg38 -c 0.05 -p EUR
+
+./runPrsCLI.sh -f /media/sf_dna/prskb/rsid_and_genotype.txt -o PRS_psoriasis.tsv -r hg38 -c 0.05 -p EUR -t psoriasis
+
+./runPrsCLI.sh -f /media/sf_dna/prskb/rsid_and_genotype.txt -o PRS_prostate_cancer.tsv -r hg38 -c 0.05 -p EUR -t "prostate cancer"
+
+
+```
+
+```{r}
+
+myVCF_path <- "C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf"
+
+# Nebula vcf
+vcf <- read_tsv(myVCF_path, comment = "##")
+length(unique(vcf$ID))
+length(vcf$ID)
+
+ids <- vcf$ID
+ids[duplicated(ids)]
+
+
+# looks like duplicates are "." (missing IDs)
+# program accepts Either a vcf or a txt with lines formatted as rsID:allele1,allele2.
+# lets make the latter
+
+myVariants_path <- "C:/Users/jmcgirr/dna/nebula/vcf/myVariants.txt"
+
+# Nebula vcf
+rsid_and_genotype <- read_tsv(myVariants_path, col_select = c("ID","myVariants.GT")) |>
+  mutate(myVariants.GT = gsub("/|\\|", "," ,myVariants.GT)) |>
+  # remove deletions labeled as "*"
+  #filter(vcf_allele1 != "*",vcf_allele2 != "*") |>
+  # remove rows with missing rsid
+  filter(str_detect(ID,fixed("rs"))) |>
+  unite("ID_genotype", c("ID", "myVariants.GT"), sep = ":")
+head(as.data.frame(rsid_and_genotype))
+
+write.table(rsid_and_genotype,"C:/Users/jmcgirr/dna/prskb/rsid_and_genotype.txt", row.names = FALSE, quote = FALSE, sep = "\t", col.names = FALSE)
+
+prs_output_path <- "C:/Users/jmcgirr/dna/prskb/PRS_output.tsv"
+prs_output_path <- "C:/Users/jmcgirr/dna/prskb/PRS_prostate_cancer.tsv"
+
+prs <- read_tsv(prs_output_path)
+view(prs)
+
 
 ```

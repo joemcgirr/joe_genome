@@ -1,0 +1,109 @@
+---
+title: "Investigating my genomic variants in the GWAS Catelog"
+author: "Joe McGirr"
+date: '`r Sys.Date()`'
+output: rmdformats::readthedown
+editor_options: 
+  chunk_output_type: console
+---
+
+```{css, echo=FALSE}
+pre, code {white-space:pre !important; overflow-x:auto}
+```
+
+# Sequencing my genome
+
+This is the second in a series of notebooks that document my attempt to learn more about myself through sequencing. I'm a bioinformatics scientist with lots of experience tinkering with genomic data sets. When I heard that Nebula Genomics would sequence my whole genome at 30x coverage for $300 AND let me download all of the data (raw `.fastq`, .`.bam`, and `.vcf`), I jumped on the chance to take a look at my own source code. Nebula provided me with a `vcf` file containing 4,785,184 QC passing variants. I want to prioritize which of these millions of variants might deserve a closer look. In a previous post, I annotated these variants to see if any were known to disrupt protein function or play a role in disease. 
+
+Here I   
+
+Anyone with a `vcf` file from Nebula and a little experience with Linux and R should be able to recreate these analyses for themselves. I ran everything below on my little personal laptop (i5, 16G RAM) running Windows 11 with an [Ubuntu Virtualbox install](https://ubuntu.com/tutorials/how-to-run-ubuntu-desktop-on-a-virtual-machine-using-virtualbox#1-overview).
+
+# GAWS Catelog 
+(gwascat package)
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+
+library(gwascat)
+library(snakecase)
+suppressPackageStartupMessages(library(tidyverse))
+
+myVariants_path <- "C:/Users/jmcgirr/dna/nebula/vcf/myVariants.txt"
+
+# Nebula vcf
+vcf <- read_tsv(myVariants_path, col_select = c("CHROM","POS","TYPE","ID","myVariants.GT")) |>
+       # only check SNPs
+       filter(TYPE == "SNP") |> select(-c(TYPE)) |>
+       separate(myVariants.GT, c("vcf_allele1","vcf_allele2"), sep = "/|\\|") |>
+       # remove deletions labeled as "*"
+       filter(vcf_allele1 != "*",vcf_allele2 != "*") |>
+       # remove rows with missing rsid
+       filter(str_detect(ID,fixed("rs")))
+head(as.data.frame(vcf))
+
+gwtrunc <- makeCurrentGwascat()
+topTraits(gwtrunc)
+#intr <- gwtrunc[ intersect(getRsids(gwtrunc), vcf$ID) ]
+# catelog_matches <- data.frame(CHROM = paste0("chr",intr$`CHR_ID`),
+#                               POS = intr$`CHR_POS`,
+#                               ID = intr$`SNPS`,
+#                               STRONGEST_SNP_RISK_ALLELE = intr$`STRONGEST SNP-RISK ALLELE`,
+#                               RISK_ALLELE_FREQUENCY = intr$`RISK ALLELE FREQUENCY`,
+#                               DISEASE_TRAIT = intr$`DISEASE/TRAIT`,
+#                               P_VALUE = intr$`P-VALUE`,
+#                               OR_or_Beta = intr$`OR or BETA`,
+#                               CI = intr$`X95..CI..TEXT.`,
+#                               PUBMEDID = intr$`PUBMEDID`) |>
+#                   separate(STRONGEST_SNP_RISK_ALLELE, c("STRONGEST_SNP","RISK_ALLELE"), sep = "-" ,remove = TRUE) |>
+#                   select(-c(STRONGEST_SNP)) |>
+#                   arrange(P_VALUE) |>
+#                   inner_join(vcf)
+
+catelog_matches <-  as.data.frame(gwtrunc) |> 
+                    filter(SNPS %in% vcf$ID) |>
+                    select(-c(DATE.ADDED.TO.CATALOG, FIRST.AUTHOR, width, STUDY, REGION, CHR_ID,
+                              UPSTREAM_GENE_ID, DOWNSTREAM_GENE_ID, SNP_GENE_IDS, UPSTREAM_GENE_DISTANCE,
+                              DOWNSTREAM_GENE_DISTANCE,MERGED, SNP_ID_CURRENT,PVALUE_MLOG,PLATFORM..SNPS.PASSING.QC.,
+                              STUDY.ACCESSION,P.VALUE..TEXT.,PUBMEDID)) |>
+                    separate(STRONGEST.SNP.RISK.ALLELE, c("STRONGEST_SNP","RISK_ALLELE"), sep = "-" ,remove = TRUE) |>
+                    select(-c(STRONGEST_SNP)) |>
+                    arrange(P.VALUE) |>
+                    inner_join(vcf, by = c("SNPS" = "ID"))
+
+nrow(catelog_matches)
+head(catelog_matches,50)
+names(catelog_matches) <- to_snake_case(names(catelog_matches))
+
+homozygous_for_risk_allele <- filter(catelog_matches,vcf_allele_1 == risk_allele, vcf_allele_2 == risk_allele, p_value < 1e-20) |> 
+                              arrange(risk_allele_frequency, p_value)
+head(homozygous_for_risk_allele)
+
+homozygous_for_risk_allele_low_freq <- filter(catelog_matches,vcf_allele_1 == risk_allele, vcf_allele_2 == risk_allele, risk_allele_frequency < 0.1, p_value < 1e-20) |> 
+                                       arrange(p_value)
+
+het_or_hom_for_risk_allele <- filter(catelog_matches,vcf_allele_1 == risk_allele | vcf_allele_2 == risk_allele, p_value < 1e-20) |> 
+                              arrange(risk_allele_frequency, p_value)
+as.data.frame(het_or_hom_for_risk_allele) |> head(50)
+
+het_or_hom_for_risk_allele <- filter(catelog_matches,vcf_allele_1 == risk_allele | vcf_allele_2 == risk_allele, p_value < 1e-20) |> 
+                              arrange(desc(or_or_beta))
+as.data.frame(het_or_hom_for_risk_allele) |> head(100)
+
+
+catelog_matches |> 
+  arrange(desc(OR_or_Beta)) |> 
+  as.data.frame() |> 
+  head(100)
+
+het_or_hom_for_risk_allele |>
+  group_by(DISEASE_TRAIT) |>
+  summarize(Count=n()) |>
+  mutate(Percent = round((Count/sum(Count)*100))) |>
+  arrange(desc(Count)) |>
+  as.data.frame() |>
+  head(100)
+
+# notes on interpreting betas and OR
+# https://parkinsonsroadmap.org/understanding-gwas/
+
+```

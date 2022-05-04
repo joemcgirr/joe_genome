@@ -42,7 +42,6 @@ Publications: [SnpEFF](https://pcingola.github.io/SnpEff/adds/SnpEff_paper.pdf),
 start_time <- Sys.time()
 
 suppressPackageStartupMessages(library(tidyverse))
-#library(vroom)
 library(rsnps)
 library(gt)
 #library(beepr)
@@ -295,9 +294,9 @@ print(get.snpedia.urls(patho) |>
 
 # Notes
 
-## Git repo for the R markdown used to create this html
+## Git repo
 
-
+https://github.com/joemcgirr/joe_genome/tree/main/snpEFF
 
 ### R run time and session info
 
