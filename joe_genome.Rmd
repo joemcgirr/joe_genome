@@ -655,10 +655,14 @@ wget https://prs.byu.edu/download_cli
 
 ./runPrsCLI.sh -f /media/sf_dna/prskb/rsid_and_genotype.txt -o PRS_prostate_cancer.tsv -r hg38 -c 0.05 -p EUR -t "prostate cancer"
 
+./runPrsCLI.sh -f /media/sf_dna/prskb/rsid_and_genotype.txt -o PRS_prostate_default.tsv -r hg38 -c 0.05 -p EUR
 
 ```
 
 ```{r}
+
+library(snakecase)
+library(tidyverse)
 
 myVCF_path <- "C:/Users/jmcgirr/dna/nebula/vcf/NG1T6RKMCV.vcf"
 
@@ -689,11 +693,21 @@ head(as.data.frame(rsid_and_genotype))
 
 write.table(rsid_and_genotype,"C:/Users/jmcgirr/dna/prskb/rsid_and_genotype.txt", row.names = FALSE, quote = FALSE, sep = "\t", col.names = FALSE)
 
-prs_output_path <- "C:/Users/jmcgirr/dna/prskb/PRS_output.tsv"
+prs_output_path <- "C:/Users/jmcgirr/dna/prskb/PRS_default.tsv"
 prs_output_path <- "C:/Users/jmcgirr/dna/prskb/PRS_prostate_cancer.tsv"
 
-prs <- read_tsv(prs_output_path)
+prs <- read_tsv(prs_output_path) |> 
+  filter(!is.na(Percentile)) |> 
+  arrange(Percentile) 
 view(prs)
+
+high_percentile <- tail(prs,(nrow(prs)-8572)) |>
+  filter(`SNP Overlap` > 10)
+nrow(high_percentile)
+
+  
+view(high_percentile)
+
 
 
 ```
