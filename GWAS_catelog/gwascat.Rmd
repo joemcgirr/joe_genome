@@ -175,7 +175,8 @@ p1 <- catalog_matches |>
        axis.text=element_text(size=12),
        plot.title=element_text(size=18)) +
       xlim(0,1) +
-      ggtitle("Distribution of risk allele frequencies")
+      ggtitle("Distribution of risk allele frequencies") +
+      geom_vline(xintercept = 0.1, color = red, linetype = 2)
 print(p1)
 
 head(homozygous_for_risk_allele_low_freq) |> gt() |> 
