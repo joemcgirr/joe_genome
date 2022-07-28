@@ -655,7 +655,7 @@ wget https://prs.byu.edu/download_cli
 
 ./runPrsCLI.sh -f /media/sf_dna/prskb/rsid_and_genotype.txt -o PRS_prostate_cancer.tsv -r hg38 -c 0.05 -p EUR -t "prostate cancer"
 
-./runPrsCLI.sh -f /media/sf_dna/prskb/rsid_and_genotype.txt -o PRS_prostate_default.tsv -r hg38 -c 0.05 -p EUR
+./runPrsCLI.sh -f /media/sf_dna/prskb/rsid_and_genotype.txt -o PRS_default.tsv -r hg38 -c 0.05 -p EUR
 
 ```
 
@@ -691,7 +691,7 @@ rsid_and_genotype <- read_tsv(myVariants_path, col_select = c("ID","myVariants.G
   unite("ID_genotype", c("ID", "myVariants.GT"), sep = ":")
 head(as.data.frame(rsid_and_genotype))
 
-write.table(rsid_and_genotype,"C:/Users/jmcgirr/dna/prskb/rsid_and_genotype.txt", row.names = FALSE, quote = FALSE, sep = "\t", col.names = FALSE)
+#write.table(rsid_and_genotype,"C:/Users/jmcgirr/dna/prskb/rsid_and_genotype.txt", row.names = FALSE, quote = FALSE, sep = "\t", col.names = FALSE)
 
 prs_output_path <- "C:/Users/jmcgirr/dna/prskb/PRS_default.tsv"
 prs_output_path <- "C:/Users/jmcgirr/dna/prskb/PRS_prostate_cancer.tsv"

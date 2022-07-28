@@ -1,5 +1,5 @@
 ---
-title: "Investigating my genomic variants in the GWAS Catelog"
+title: "Finding my variants in the GWAS Catalog and calculating my polygenic risk scores"
 author: "Joe McGirr"
 date: '`r Sys.Date()`'
 output: rmdformats::readthedown
@@ -13,21 +13,83 @@ pre, code {white-space:pre !important; overflow-x:auto}
 
 # Sequencing my genome
 
-This is the second in a series of notebooks that document my attempt to learn more about myself through sequencing. I'm a bioinformatics scientist with lots of experience tinkering with genomic data sets. When I heard that Nebula Genomics would sequence my whole genome at 30x coverage for $300 AND let me download all of the data (raw `.fastq`, .`.bam`, and `.vcf`), I jumped on the chance to take a look at my own source code. Nebula provided me with a `vcf` file containing 4,785,184 QC passing variants. I want to prioritize which of these millions of variants might deserve a closer look. In a previous post, I annotated these variants to see if any were known to disrupt protein function or play a role in disease. 
+This is one of a series of notebooks that document my attempt to learn more about myself through sequencing. I'm a bioinformatics scientist with lots of experience tinkering with genomic data sets. When I heard that Nebula Genomics would sequence my whole genome at 30x coverage for $300 AND let me download all of the data (raw `.fastq`, .`.bam`, and `.vcf`), I jumped on the chance to take a look at my own source code. Nebula provided me with a `vcf` file containing 4,785,184 QC passing variants. 
 
-Here I   
+I want to prioritize which of these millions of variants might deserve a closer look. In a [previous post](https://joemcgirr.github.io/files/code_tutorials/my_genome/SnpEFF.html), I annotated these variants to see if any were predicted to disrupt protein function or play a role in disease. 
+
+In this post, I'll show how I searched the GWAS catalog for variant-phenotype associations and calculated polygenic risk scores. First, I search the GWAS catalog to see which of my genomic variants have been associated with disease phenotypes in genome-wide association studies. This only provides information about single variants, which may be useful to know about monogenic disease, but it is well known that any most variants have a very small effect sizes. So next, in order to understand how multiple variants with smaller effect sizes might affect complex traits, I calculate polygenic risk scores for various traits.   
+
+Disclaimer! It is important to understand the limitations of GWAS and why polygenic risk scores need to be interpreted with caution. It would be foolish to make any medical decisions based solely on these results. See [here](https://pubmed.ncbi.nlm.nih.gov/29789686/) and [here](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-018-0610-x) for thoughtful discussions about PRS.
 
 Anyone with a `vcf` file from Nebula and a little experience with Linux and R should be able to recreate these analyses for themselves. I ran everything below on my little personal laptop (i5, 16G RAM) running Windows 11 with an [Ubuntu Virtualbox install](https://ubuntu.com/tutorials/how-to-run-ubuntu-desktop-on-a-virtual-machine-using-virtualbox#1-overview).
 
-# GAWS Catelog 
-(gwascat package)
+# Publically availible tools and databases
+
+ - The [GWAS Catalog](https://www.ebi.ac.uk/gwas/) (NHGRI-EBI Catalog of human genome-wide association studies) provides a consistent, searchable, visualisable and, freely available database of SNP-trait associations. GWA studies are identified by literature search and assessed by curators, who then extract the reported trait, significant SNP-trait associations, and sample metadata.
+
+ - [gwascat](https://bioconductor.org/packages/release/bioc/html/gwascat.html) is an R Bioconductor package written by Vincent Carey that provides convenient tools for working with contents of GWAS Catalog database. I use this package to identify GWA studies that found significant associations for my variants. [See here](https://bioconductor.org/packages/release/bioc/vignettes/gwascat/inst/doc/gwascat.html) for a vignette that describes more of its features. 
+
+ - The [PRS Knowledge Base](https://prs.byu.edu/index.html) provides tools to calculate polygenic risk scores using data downloaded and curated from the NHGRI-EBI GWAS Catalog. This is the [git repo](https://github.com/kauwelab/PolyRiskScore) for the PRSKB software. 
+
+ - [GATK](https://gatk.broadinstitute.org/hc/en-us) is incredible software with many tools for genomic analyses. I only use it here to convert the `vcf` into something easier to read. 
+
+
+# Finding my variants in the GWAS Catalog
+
+## Load Libraries
 
 ```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+
+start_time <- Sys.time()
 
 library(gwascat)
 library(snakecase)
 suppressPackageStartupMessages(library(tidyverse))
+library(gt)
 
+# Wong, B. Points of view: Color blindness. Nat Methods (2011).
+bla <- '#000000'
+blu <- '#0072b2'
+grb <- '#56b4e9'
+lir <- '#cc79a7'
+gre <- '#009e73'
+red <- '#d55e00'
+org <- '#e69f00'
+yel <- '#f0e442'
+gry <- '#BBBBBB'
+
+make.hyperlink <-  function(myurl,mytext=myurl) {
+  paste('<a href="',myurl,'">',mytext,'</a>')
+}
+
+```
+
+## Setup
+
+GATK is quick and easy to install.
+
+```{bash, eval = FALSE,class.source = 'fold-show'}
+sudo apt install default-jre
+wget https://github.com/broadinstitute/gatk/releases/download/4.2.5.0/gatk-4.2.5.0.zip
+unzip gatk-4.2.5.0.zip
+# set alias in bash profile 
+# alias gatk='/media/sf_dna/apps/gatk-4.2.5.0/gatk'
+```
+
+I convert the `vcf` provided by Nebula to a tab delimited text file with GATK. This makes the data a little easier to read and can be fed into R as a data frame. I also replace my Nebula ID with 'myVariants' to make downstream scripts more generic.
+
+```{bash, eval = FALSE,class.source = 'fold-show'}
+gatk VariantsToTable -V nebula.vcf -F CHROM -F POS -F TYPE -F ID -F ANN -F LOF -F NMD -GF AD -GF DP -GF GQ -GF GT -O myVariants.ann.txt
+
+nebulaID="##########" 
+sed -i "1s/$nebulaID/myVariants/g" myVariants.ann.txt
+```
+
+## Search the GAWS Catalog 
+
+Create a data frame that joins rsIDs from the Nebula vcf with rsIDs in the catalog. I find 171,943 associations for 81,834 variants.
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
 myVariants_path <- "C:/Users/jmcgirr/dna/nebula/vcf/myVariants.txt"
 
 # Nebula vcf
@@ -42,24 +104,9 @@ vcf <- read_tsv(myVariants_path, col_select = c("CHROM","POS","TYPE","ID","myVar
 head(as.data.frame(vcf))
 
 gwtrunc <- makeCurrentGwascat()
-topTraits(gwtrunc)
-#intr <- gwtrunc[ intersect(getRsids(gwtrunc), vcf$ID) ]
-# catelog_matches <- data.frame(CHROM = paste0("chr",intr$`CHR_ID`),
-#                               POS = intr$`CHR_POS`,
-#                               ID = intr$`SNPS`,
-#                               STRONGEST_SNP_RISK_ALLELE = intr$`STRONGEST SNP-RISK ALLELE`,
-#                               RISK_ALLELE_FREQUENCY = intr$`RISK ALLELE FREQUENCY`,
-#                               DISEASE_TRAIT = intr$`DISEASE/TRAIT`,
-#                               P_VALUE = intr$`P-VALUE`,
-#                               OR_or_Beta = intr$`OR or BETA`,
-#                               CI = intr$`X95..CI..TEXT.`,
-#                               PUBMEDID = intr$`PUBMEDID`) |>
-#                   separate(STRONGEST_SNP_RISK_ALLELE, c("STRONGEST_SNP","RISK_ALLELE"), sep = "-" ,remove = TRUE) |>
-#                   select(-c(STRONGEST_SNP)) |>
-#                   arrange(P_VALUE) |>
-#                   inner_join(vcf)
+#topTraits(gwtrunc)
 
-catelog_matches <-  as.data.frame(gwtrunc) |> 
+catalog_matches <-  as.data.frame(gwtrunc) |> 
                     filter(SNPS %in% vcf$ID) |>
                     select(-c(DATE.ADDED.TO.CATALOG, FIRST.AUTHOR, width, STUDY, REGION, CHR_ID,
                               UPSTREAM_GENE_ID, DOWNSTREAM_GENE_ID, SNP_GENE_IDS, UPSTREAM_GENE_DISTANCE,
@@ -70,40 +117,196 @@ catelog_matches <-  as.data.frame(gwtrunc) |>
                     arrange(P.VALUE) |>
                     inner_join(vcf, by = c("SNPS" = "ID"))
 
-nrow(catelog_matches)
-head(catelog_matches,50)
-names(catelog_matches) <- to_snake_case(names(catelog_matches))
+names(catalog_matches) <- to_snake_case(names(catalog_matches))
 
-homozygous_for_risk_allele <- filter(catelog_matches,vcf_allele_1 == risk_allele, vcf_allele_2 == risk_allele, p_value < 1e-20) |> 
+match_stats <- data.frame(column = c("rsIDs",
+                                   "phenotypes",
+                                   "journals"),
+                          n = c(length(unique(catalog_matches$snps)),
+                                length(unique(catalog_matches$mapped_trait)),
+                                length(unique(catalog_matches$journal))))
+
+match_stats |> gt() |> tab_header(title = "Catalog Matches")
+
+
+catalog_matches[4:9,] |> gt() |> tab_header(title = "Examples of Catalog Matches")
+
+```
+
+### Heterozygous for risk allele
+
+As a first pass I'll look at variants for which I have a copy of the allele implicated as the risk allele. I filter and order by p-value to see the strongest associations. 
+
+p_value < 1e-20
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+
+het_or_hom_for_risk_allele <- filter(catalog_matches,vcf_allele_1 == risk_allele | vcf_allele_2 == risk_allele, p_value < 1e-20) |> 
+                              arrange(risk_allele_frequency, p_value) |>
+                              select(c(disease_trait, p_value, or_or_beta, risk_allele, snps, link))
+
+head(het_or_hom_for_risk_allele) |> gt() |> 
+  tab_header(title = "Heterozygous for risk allele") |> 
+  fmt(columns = 'link',fns = make.hyperlink)
+
+```
+
+### Homozygous for rare risk allele
+
+Next I'll be more strict and look at variants for which I am homozygous for the risk allele. I further filter to only include those that are low frequency and showed strong associations with the phenotype being studied. 
+
+risk_allele_frequency < 0.1 and p_value < 1e-20
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+homozygous_for_risk_allele <- filter(catalog_matches,vcf_allele_1 == risk_allele, vcf_allele_2 == risk_allele, p_value < 1e-20) |> 
                               arrange(risk_allele_frequency, p_value)
-head(homozygous_for_risk_allele)
 
-homozygous_for_risk_allele_low_freq <- filter(catelog_matches,vcf_allele_1 == risk_allele, vcf_allele_2 == risk_allele, risk_allele_frequency < 0.1, p_value < 1e-20) |> 
-                                       arrange(p_value)
+homozygous_for_risk_allele_low_freq <- filter(catalog_matches,vcf_allele_1 == risk_allele, vcf_allele_2 == risk_allele, risk_allele_frequency < 0.1, p_value < 1e-20) |> 
+                                       arrange(p_value) |>
+                                       select(c(disease_trait, p_value, or_or_beta, risk_allele, snps, link))
 
-het_or_hom_for_risk_allele <- filter(catelog_matches,vcf_allele_1 == risk_allele | vcf_allele_2 == risk_allele, p_value < 1e-20) |> 
-                              arrange(risk_allele_frequency, p_value)
-as.data.frame(het_or_hom_for_risk_allele) |> head(50)
+p1 <- catalog_matches |> 
+      ggplot(aes(risk_allele_frequency)) +
+      geom_histogram(bins = 100) +
+      theme_minimal() +
+      theme(axis.title.x=element_text(size=14),
+       axis.title.y=element_text(size=12),
+       axis.title=element_text(size=14),
+       axis.text=element_text(size=12),
+       plot.title=element_text(size=18)) +
+      xlim(0,1) +
+      ggtitle("Distribution of risk allele frequencies")
+print(p1)
 
-het_or_hom_for_risk_allele <- filter(catelog_matches,vcf_allele_1 == risk_allele | vcf_allele_2 == risk_allele, p_value < 1e-20) |> 
-                              arrange(desc(or_or_beta))
-as.data.frame(het_or_hom_for_risk_allele) |> head(100)
+head(homozygous_for_risk_allele_low_freq) |> gt() |> 
+  tab_header(title = "Homozygous for risk allele") |>
+  fmt(columns = 'link',fns = make.hyperlink)
+
+```
+
+# Polygenic risk scores
+
+## Setup
+
+The polygenic risk score calculator from the PRS Knowledge Base inputs either a vcf or a txt with lines formatted as rsID:allele1,allele2. I chose to create the txt input. The following uses the genotype information output by GATK to create a list of all variants.
+
+Table is written out and used as input for the PRSKB command line tool.
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+
+myVariants_path <- "C:/Users/jmcgirr/dna/nebula/vcf/myVariants.txt"
+
+# Nebula vcf
+rsid_and_genotype <- read_tsv(myVariants_path, col_select = c("ID","myVariants.GT")) |>
+  mutate(myVariants.GT = gsub("/|\\|", "," ,myVariants.GT)) |>
+  # remove deletions labeled as "*"
+  #filter(vcf_allele1 != "*",vcf_allele2 != "*") |>
+  # remove rows with missing rsid
+  filter(str_detect(ID,fixed("rs"))) |>
+  unite("ID_genotype", c("ID", "myVariants.GT"), sep = ":")
+head(as.data.frame(rsid_and_genotype))
+
+# write.table(rsid_and_genotype,"C:/Users/jmcgirr/dna/prskb/rsid_and_genotype.txt", row.names = FALSE, quote = FALSE, sep = "\t", col.names = FALSE)
+
+```
+
+## PRSKB command line
+
+Required installed programs: Bash and jq for bash, Python3 and the PyVCF, filelock, and requests Python modules.
+
+```{bash, eval = FALSE,class.source = 'fold-show'}
+wget https://prs.byu.edu/download_cli
+
+./runPrsCLI.sh -f /media/sf_dna/prskb/rsid_and_genotype.txt -o PRS_default.tsv -r hg38 -c 0.05 -p EUR
+
+```
+
+## Identifying the percentile rank of my PRS
+
+Since PRS is a relative measure, percentile rank is a way to understand where I fall within the population of individuals included in the study.
+
+I filter to only look at entries with percentiles calculated and used more than 10 SNPs in the calculation.
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+
+prs_output_path <- "C:/Users/jmcgirr/dna/prskb/PRS_default.tsv"
+
+prs <- read_tsv(prs_output_path) |>
+  filter(!is.na(Percentile)) |>
+  filter(`SNP Overlap` > 10) |>
+  arrange(desc(Percentile))
+#view(prs)
+
+# high_percentile <- tail(prs,(nrow(prs)-8572)) |>
+#   filter(`SNP Overlap` > 10)
+# nrow(high_percentile)
+
+head(select(prs,c(`Reported Trait`, `Trait`, `Citation`, `Included SNPs`, `Polygenic Risk Score`, `Percentile`))) |> 
+  gt() |> 
+  tab_header(title = "PRSKB command line tool output")
+
+```
+
+## A cautionary example
+
+You can see that the percentile I fall within can vary widely for some traits between different studies
+
+```{r, message=FALSE, warning=FALSE, fig.width= 10, fig.height= 7,class.source = 'fold-show'}
+
+trait_prs <- filter(prs, str_detect(Trait, "Rheumatoid Arthritis"))
+trait_prs <- filter(prs, str_detect(`Reported Trait`, "Prostate Cancer"))
 
 
-catelog_matches |> 
-  arrange(desc(OR_or_Beta)) |> 
-  as.data.frame() |> 
-  head(100)
+head(select(trait_prs,c(`Reported Trait`, `Trait`, `Citation`, `Included SNPs`, `Polygenic Risk Score`, `Percentile`))) |> 
+  gt() |> 
+  tab_header(title = "PRSKB command line tool output")
 
-het_or_hom_for_risk_allele |>
-  group_by(DISEASE_TRAIT) |>
-  summarize(Count=n()) |>
-  mutate(Percent = round((Count/sum(Count)*100))) |>
-  arrange(desc(Count)) |>
-  as.data.frame() |>
-  head(100)
+```
 
-# notes on interpreting betas and OR
-# https://parkinsonsroadmap.org/understanding-gwas/
+### Column descriptions for PRSKB output
 
+Copied from https://github.com/kauwelab/PolyRiskScore
+
+ - Study ID -- The study identifier assigned by the GWAS Catalog (or the user if they uploaded their own GWAS summary statistics)
+ - Reported Trait -- Trait based on the phenotype being studied, as described by the authors
+ - Trait -- Trait assigned by the GWAS Catalog, standardized from the Experimental Factor Ontology
+ - Citation -- The citation of the study
+ - P-Value Annotation -- Additional information about the p-values
+ - Beta Annotation -- Additional information about the beta values
+ - Score Type -- This indicates if the study used odds ratios or beta values
+ - Units (if applicable) -- This column will contain the beta units if the Score Type is beta.
+ - SNP Overlap -- Details the number of SNPs that are in the sample vcf/txt file which are 1. in the study, 2. not excluded from the calculation (see below), and 3. not removed from the calculation due to linkage-disequilibrium clumping.
+ - SNPs Excluded Due To Cutoffs -- Details the number of snps excluded from the study calculation due to p-value cutoff or minor allele frequency threshold
+ - Included SNPs -- The total number of SNPs included in the calculation
+ - Used Super Population -- The super population used for linkage disequillibrium
+ - Columns Available Only In The Full Version
+ - Percentile -- Indicates the percentile rank of the samples polygenic risk score *(also included in the condensed version of .txt input files)
+ - Protective Variants -- Variants that are protective against the phenotype of interest
+ - Risk Variants -- Variants that add risk for the phenotype of interest
+ - Variants Without Risk Alleles -- Variants that are present in the study, but the sample does not possess the allele reported with association. Note that a SNP may be in this list and also in the Protective Variants or Risk Variants list. This is caused by an individual being heterozygous for the alleles at that point.
+ - Variants in High LD -- Variants that are not used in the calculation, due to them being in high linkage disequillibrium with another variant in the study.
+
+# Further Reading
+
+A few links on the basics of GWAS and PRS
+
+https://parkinsonsroadmap.org/understanding-gwas/
+
+https://www.genome.gov/Health/Genomics-and-Medicine/Polygenic-risk-scores
+
+https://assets.researchsquare.com/files/rs-799235/v1/7aa85f2d-0030-48ac-9926-fb5c0be9ec2f.pdf?c=1632151434
+
+# Notes
+
+## Git repo
+
+https://github.com/joemcgirr/joe_genome/
+
+## R run time and session info
+
+```{r}
+end_time <- Sys.time()
+print(end_time - start_time)
+
+sessionInfo()
 ```
